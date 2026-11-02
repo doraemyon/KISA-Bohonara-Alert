@@ -1,0 +1,58 @@
+name: KISA security notices to KakaoTalk
+
+on:
+  # GitHub Actions supports scheduled runs no more often than every 5 minutes.
+  # Starting at minute 2 avoids the top-of-hour queue spike.
+  schedule:
+    - cron: "2-59/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      send_test:
+        description: "Send a KakaoTalk connection-test message"
+        required: false
+        default: false
+        type: boolean
+
+# Needed only to commit data/state.json after a new notice or monthly heartbeat.
+permissions:
+  contents: write
+
+# Do not let two scheduled runs read and update the state file at the same time.
+concurrency:
+  group: kisa-security-notice-checker
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Check out state
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check KISA RSS and notify KakaoTalk
+        id: check
+        env:
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          # A fine-grained PAT limited to this repository's Actions secrets: Read and write.
+          # It is used only when Kakao rotates the refresh token.
+          GH_SECRETS_PAT: ${{ secrets.GH_SECRETS_PAT }}
+          SEND_TEST: ${{ inputs.send_test }}
+        run: python3 scripts/check_kisa.py
+
+      # Run even after a notification error so successfully delivered notices are not repeated.
+      - name: Save notice state
+        if: ${{ always() && steps.check.outputs.state_changed == 'true' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/state.json
+          if git diff --cached --quiet; then
+            echo "No state change to commit."
+          else
+            git commit -m "chore: update KISA notice state"
+            git push
+          fi
