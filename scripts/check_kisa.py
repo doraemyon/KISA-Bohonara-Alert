@@ -266,7 +266,7 @@ def main() -> None:
             delivered_ids: list[str] = []
             try:
                 for item in pending_items:
-                    message = f"🚨 KISA 보안공지\n{item['title']}"
+                    message = f"[KISA 보안공지]\n{item['title']}"
                     if item["published"]:
                         message += f"\n게시: {item['published']}"
                     message_id = send_telegram(message, item["link"])
