@@ -94,7 +94,7 @@ GitHub 자체 cron의 수 시간 지연을 피하기 위한 필수 단계입니�
 ### 5-2. cron-job.org 작업 만들기
 
 1. [cron-job.org](https://cron-job.org/)에서 무료 계정을 만들고 **Create cronjob**을 누릅니다.
-2. 아래처럼 입력합니다.
+2. 아래처럼 입력합니다. (URL 부분은 본인 저장소에 맞게 변경 필요)
 
 | 항목 | 값 |
 | --- | --- |
@@ -102,14 +102,16 @@ GitHub 자체 cron의 수 시간 지연을 피하기 위한 필수 단계입니�
 | URL | `https://api.github.com/repos/doraemyon/KISA-Bohonara-Alert/actions/workflows/kisa-telegram.yml/dispatches` |
 | Schedule | Every minute |
 
-3. **Advanced settings**에서 다음을 설정합니다.
+3. **ADVANCED* 탭에서 다음을 설정합니다. (Authorization 필드에 아까 생성했던 PAT 값 입력 필요)
+ - Header 부분은 Key와 Value 부분을 나눠서 입력 필요함.
+ - EX) Key: Content-Type / Value: application/json
 
 | 항목 | 값 |
 | --- | --- |
 | Request method | `POST` |
 | Request body | `{"ref":"main"}` |
 | Header | `Accept: application/vnd.github+json` |
-| Header | `Authorization: Bearer 여기에_GitHub_PAT` |
+| Header | `Authorization: Bearer 본인의_GitHub_PAT값` |
 | Header | `X-GitHub-Api-Version: 2026-03-10` |
 | Header | `Content-Type: application/json` |
 
