@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -18,6 +19,10 @@ from typing import Any
 
 RSS_URL = "https://www.boho.or.kr/kr/rss.do?bbsId=B0000133"
 TELEGRAM_SEND_URL = "https://api.telegram.org/bot{token}/sendMessage"
+GITHUB_WORKFLOW_DISPATCH_URL = (
+    "https://api.github.com/repos/{repository}/actions/workflows/"
+    "process-notice.yml/dispatches"
+)
 STATE_PATH = Path("data/state.json")
 MAX_SEEN_IDS = 500
 MAX_NOTICES_PER_RUN = 10
@@ -122,7 +127,7 @@ def published_timestamp(item: dict[str, str]) -> float:
         return 0
 
 
-def send_telegram(text: str, link: str) -> None:
+def send_telegram(text: str, link: str) -> int:
     token = required_env("TELEGRAM_BOT_TOKEN")
     payload = {
         "chat_id": required_env("TELEGRAM_CHAT_ID"),
@@ -157,6 +162,69 @@ def send_telegram(text: str, link: str) -> None:
         fail("Telegram API returned non-JSON data.")
     if not isinstance(result, dict) or result.get("ok") is not True:
         fail(f"Telegram message was rejected: {json.dumps(result, ensure_ascii=False)[:500]}")
+
+    message = result.get("result")
+    message_id = message.get("message_id") if isinstance(message, dict) else None
+    if not isinstance(message_id, int):
+        fail("Telegram accepted the message but returned no numeric message_id.")
+    return message_id
+
+
+def dispatch_extension(item: dict[str, str], message_id: int) -> None:
+    """Best-effort dispatch to an optional notice-processing workflow."""
+    repository = os.environ.get("NOTICE_EXTENSION_REPOSITORY", "").strip()
+    token = os.environ.get("NOTICE_EXTENSION_TOKEN", "").strip()
+    if not repository and not token:
+        return
+    if not repository or not token:
+        print(
+            "WARNING: Optional notice extension is only partly configured; "
+            "the standard Telegram alert was still delivered.",
+            file=sys.stderr,
+        )
+        return
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        print(
+            "WARNING: Optional notice extension repository has an invalid format; "
+            "skipping it.",
+            file=sys.stderr,
+        )
+        return
+
+    payload = {
+        "ref": "main",
+        "inputs": {
+            "notice_url": item["link"],
+            "notice_title": item["title"],
+            "telegram_message_id": str(message_id),
+        },
+    }
+    request = urllib.request.Request(
+        GITHUB_WORKFLOW_DISPATCH_URL.format(repository=repository),
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+            "X-GitHub-Api-Version": "2026-03-10",
+            "User-Agent": "kisa-security-alert/2.1 (+GitHub Actions)",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            if response.status != 204:
+                fail(f"Optional notice extension returned HTTP {response.status}.")
+    except (urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as error:
+        # The user already has the fast, standard alert. Do not fail the polling
+        # run and resend a duplicate notification on the next minute.
+        print(
+            f"WARNING: Could not start optional notice extension: {error}. "
+            "The standard Telegram alert was still delivered.",
+            file=sys.stderr,
+        )
+        return
+    print("Started optional notice extension.")
 
 
 def heartbeat_due(last_heartbeat: str) -> bool:
@@ -201,7 +269,8 @@ def main() -> None:
                     message = f"🚨 KISA 보안공지\n{item['title']}"
                     if item["published"]:
                         message += f"\n게시: {item['published']}"
-                    send_telegram(message, item["link"])
+                    message_id = send_telegram(message, item["link"])
+                    dispatch_extension(item, message_id)
                     delivered_ids.append(item["id"])
                     print(f"Sent to Telegram: {item['title']}")
             except Exception:
@@ -234,6 +303,23 @@ def main() -> None:
             "https://www.boho.or.kr/kr/bbs/list.do?bbsId=B0000133&menuNo=205020",
         )
         print("Sent Telegram connection-test message.")
+
+    if os.environ.get("SEND_EXTENSION_TEST", "").lower() == "true":
+        sample = {
+            "id": "72263",
+            "title": "Ivanti 제품 보안 업데이트 권고",
+            "link": (
+                "https://www.boho.or.kr/kr/bbs/view.do?bbsId=B0000133"
+                "&menuNo=205020&nttId=72263"
+            ),
+            "published": "",
+        }
+        message_id = send_telegram(
+            f"🧪 KISA 공지 확장 연결 테스트\n{sample['title']}",
+            sample["link"],
+        )
+        dispatch_extension(sample, message_id)
+        print("Sent optional notice-extension test message.")
 
     persist(state, changed)
 

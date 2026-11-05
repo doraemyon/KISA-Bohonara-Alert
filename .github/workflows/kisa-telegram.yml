@@ -13,6 +13,11 @@ on:
         required: false
         default: false
         type: boolean
+      send_extension_test:
+        description: "Send an optional notice-extension test"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -35,7 +40,10 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NOTICE_EXTENSION_REPOSITORY: ${{ secrets.NOTICE_EXTENSION_REPOSITORY }}
+          NOTICE_EXTENSION_TOKEN: ${{ secrets.NOTICE_EXTENSION_TOKEN }}
           SEND_TEST: ${{ inputs.send_test }}
+          SEND_EXTENSION_TEST: ${{ inputs.send_extension_test }}
         run: python3 scripts/check_kisa.py
 
       # Persist IDs already delivered even if a later notification in the same
