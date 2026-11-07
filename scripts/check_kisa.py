@@ -127,16 +127,76 @@ def published_timestamp(item: dict[str, str]) -> float:
         return 0
 
 
-def send_telegram(text: str, link: str) -> int:
+def notice_id_from_link(link: str) -> str:
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query)
+    notice_ids = query.get("nttId", [])
+    if len(notice_ids) != 1 or not re.fullmatch(r"\d{1,20}", notice_ids[0]):
+        fail("KISA notice link has no valid numeric nttId.")
+    return notice_ids[0]
+
+
+def extension_notice_root(link: str, repository: str, public_base_url: str = "") -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        fail("Optional notice extension repository has an invalid format.")
+
+    if public_base_url:
+        parsed = urllib.parse.urlsplit(public_base_url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            fail("NOTICE_EXTENSION_PUBLIC_BASE_URL must be a plain HTTPS URL.")
+        base_url = public_base_url.rstrip("/")
+    else:
+        owner, name = repository.split("/", 1)
+        base_url = (
+            f"https://{owner.lower()}.github.io/"
+            f"{urllib.parse.quote(name, safe='._-')}"
+        )
+    return f"{base_url}/notices/{notice_id_from_link(link)}"
+
+
+def telegram_keyboard(link: str, include_extension: bool) -> list[list[dict[str, str]]]:
+    keyboard = [[{"text": "공지 열기", "url": link}]]
+    if not include_extension:
+        return keyboard
+
+    repository = os.environ.get("NOTICE_EXTENSION_REPOSITORY", "").strip()
+    token = os.environ.get("NOTICE_EXTENSION_TOKEN", "").strip()
+    if not repository or not token:
+        return keyboard
+
+    try:
+        root = extension_notice_root(
+            link,
+            repository,
+            os.environ.get("NOTICE_EXTENSION_PUBLIC_BASE_URL", "").strip(),
+        )
+    except RuntimeError as error:
+        print(f"WARNING: {error} Sending the standard button only.", file=sys.stderr)
+        return keyboard
+
+    keyboard.append(
+        [
+            {"text": "국문 공지", "url": f"{root}/ko/"},
+            {"text": "영문 공지", "url": f"{root}/en/"},
+        ]
+    )
+    return keyboard
+
+
+def send_telegram(text: str, link: str, *, include_extension: bool = False) -> int:
     token = required_env("TELEGRAM_BOT_TOKEN")
     payload = {
         "chat_id": required_env("TELEGRAM_CHAT_ID"),
         "text": text,
         "disable_notification": False,
         "link_preview_options": {"is_disabled": True},
-        "reply_markup": {
-            "inline_keyboard": [[{"text": "공지 열기", "url": link}]],
-        },
+        "reply_markup": {"inline_keyboard": telegram_keyboard(link, include_extension)},
     }
     request = urllib.request.Request(
         TELEGRAM_SEND_URL.format(token=token),
@@ -170,7 +230,7 @@ def send_telegram(text: str, link: str) -> int:
     return message_id
 
 
-def dispatch_extension(item: dict[str, str], message_id: int) -> None:
+def dispatch_extension(item: dict[str, str]) -> None:
     """Best-effort dispatch to an optional notice-processing workflow."""
     repository = os.environ.get("NOTICE_EXTENSION_REPOSITORY", "").strip()
     token = os.environ.get("NOTICE_EXTENSION_TOKEN", "").strip()
@@ -196,7 +256,6 @@ def dispatch_extension(item: dict[str, str], message_id: int) -> None:
         "inputs": {
             "notice_url": item["link"],
             "notice_title": item["title"],
-            "telegram_message_id": str(message_id),
         },
     }
     request = urllib.request.Request(
@@ -269,8 +328,8 @@ def main() -> None:
                     message = f"[KISA 보안공지]\n{item['title']}"
                     if item["published"]:
                         message += f"\n게시: {item['published']}"
-                    message_id = send_telegram(message, item["link"])
-                    dispatch_extension(item, message_id)
+                    send_telegram(message, item["link"], include_extension=True)
+                    dispatch_extension(item)
                     delivered_ids.append(item["id"])
                     print(f"Sent to Telegram: {item['title']}")
             except Exception:
@@ -314,11 +373,12 @@ def main() -> None:
             ),
             "published": "",
         }
-        message_id = send_telegram(
+        send_telegram(
             f"🧪 KISA 공지 확장 연결 테스트\n{sample['title']}",
             sample["link"],
+            include_extension=True,
         )
-        dispatch_extension(sample, message_id)
+        dispatch_extension(sample)
         print("Sent optional notice-extension test message.")
 
     persist(state, changed)
