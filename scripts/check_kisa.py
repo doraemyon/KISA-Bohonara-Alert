@@ -13,11 +13,13 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import date
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
 
 RSS_URL = "https://www.boho.or.kr/kr/rss.do?bbsId=B0000133"
+KISA_BOARD_URL = "https://www.boho.or.kr/kr/bbs/list.do?bbsId=B0000133&menuNo=205020"
 TELEGRAM_SEND_URL = "https://api.telegram.org/bot{token}/sendMessage"
 GITHUB_WORKFLOW_DISPATCH_URL = (
     "https://api.github.com/repos/{repository}/actions/workflows/"
@@ -133,6 +135,58 @@ def notice_id_from_link(link: str) -> str:
     if len(notice_ids) != 1 or not re.fullmatch(r"\d{1,20}", notice_ids[0]):
         fail("KISA notice link has no valid numeric nttId.")
     return notice_ids[0]
+
+
+class AttachmentRows(HTMLParser):
+    """Read attachment flags from the KISA board's notice rows."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ids: set[str] = set()
+        self.row_id = ""
+        self.in_attachment_cell = False
+        self.has_attachment = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "tr":
+            self.row_id = ""
+            self.in_attachment_cell = False
+            self.has_attachment = False
+        elif tag == "td":
+            self.in_attachment_cell = "attach" in (attributes.get("class") or "").split()
+        elif tag == "a":
+            href = attributes.get("href") or ""
+            if href.startswith("/kr/bbs/view.do?"):
+                self.row_id = notice_id_from_link(href)
+        elif tag == "img" and self.in_attachment_cell and attributes.get("alt") == "첨부파일":
+            self.has_attachment = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "td":
+            self.in_attachment_cell = False
+        elif tag == "tr" and self.row_id and self.has_attachment:
+            self.ids.add(self.row_id)
+
+
+def fetch_attachment_ids() -> set[str]:
+    request = urllib.request.Request(
+        KISA_BOARD_URL,
+        headers={"User-Agent": "kisa-security-alert/2.1 (+GitHub Actions)"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            if response.geturl() != KISA_BOARD_URL:
+                return set()
+            document = response.read(512_001)
+        if len(document) <= 512_000:
+            parser = AttachmentRows()
+            parser.feed(document.decode("utf-8-sig"))
+            return parser.ids
+    except (OSError, ValueError):
+        # The optional indicator must never prevent the standard alert.
+        pass
+    return set()
 
 
 def extension_notice_root(link: str, repository: str, public_base_url: str = "") -> str:
@@ -322,10 +376,12 @@ def main() -> None:
         pending_items = new_items[:MAX_NOTICES_PER_RUN]
 
         if pending_items:
+            attachment_ids = fetch_attachment_ids()
             delivered_ids: list[str] = []
             try:
                 for item in pending_items:
-                    message = f"[KISA 보안공지]\n{item['title']}"
+                    clip = " 📎" if notice_id_from_link(item["link"]) in attachment_ids else ""
+                    message = f"[KISA 보안공지]\n{item['title']}{clip}"
                     if item["published"]:
                         message += f"\n게시: {item['published']}"
                     send_telegram(message, item["link"], include_extension=True)
